@@ -1,36 +1,39 @@
-# Understanding BBR: Notes, Math & Implementation Breakdown
+# Reading notes: BBR (Cardwell et al., CACM 2017)
 
-These notes break down the core ideas, mathematics, and implementation logic behind Google's paper: **"BBR: Congestion-Based Congestion Control"** (Cardwell et al., ACM Queue)[cite: 1].
+My notes on the core ideas of *BBR: Congestion-Based Congestion Control* ([doi:10.1145/3009824](https://doi.org/10.1145/3009824)).
 
----
+## 1. Why loss-based TCP breaks
 
-## 1. Why Traditional TCP Breaks
+Reno and CUBIC treat **packet loss as the signal of congestion**. That worked when links were slow and router memory was expensive. On today's networks it causes two problems:
 
-For decades, TCP algorithms like **Reno** and **CUBIC** operated on a simple assumption: **packet loss equals congestion**[cite: 1]. 
+1. **Bufferbloat (large buffers).** Loss-based TCP keeps sending until a router drops a packet. When the bottleneck has a large buffer (home modems, cellular base stations), the queue fills completely. Few packets are lost, but RTT grows from milliseconds to seconds.
+2. **Low throughput on lossy links (small buffers).** On wireless or shallow-buffered paths, many losses are random rather than caused by congestion. Loss-based TCP still cuts its sending rate and leaves bandwidth unused. The paper's Figure 10 shows CUBIC's throughput dropping 10× at 0.1% loss and stalling above 1%.
 
-When networks were slow and memory was expensive, this heuristic worked well[cite: 1]. But on modern high-speed networks, it creates two major problems:
+## 2. Kleinrock's optimal operating point
 
-1. **Bufferbloat (Large Buffers):** Loss-based TCP keeps pushing data until the router drops a packet[cite: 1]. In routers with large buffers (like home modems or cellular base stations), TCP completely fills the queue[cite: 1, 1]. The connection doesn't drop packets, but latency spikes from milliseconds to multiple seconds[cite: 1].
-2. **Throughput Collapse (Lossy Links):** On wireless or shallow-buffered networks, packet loss often happens randomly, not because the link is congested[cite: 1, 1]. Loss-based TCP misinterprets this random drop as an overload signal, slashes its sending rate in half, and leaves available bandwidth unused[cite: 1].
+A path can be described by two numbers:
 
----
+- **RTprop**: the round-trip propagation time, i.e. the RTT with empty queues.
+- **BtlBw**: the bottleneck bandwidth, the rate of the slowest link on the path.
 
-## 2. Kleinrock's Optimal Operating Point
-
-Instead of reacting to packet loss, BBR aims to operate at **Kleinrock's optimal operating point**[cite: 1]. 
-
-A network path can be characterized by two fundamental physical constraints[cite: 1]:
-* $\text{RTprop}$ (Round-Trip Propagation Time): The physical time it takes for a signal to travel back and forth across the wire when the network has zero queuing delay[cite: 1].
-* $\text{BtlBw}$ (Bottleneck Bandwidth): The maximum rate (bytes/sec) of the slowest physical link along the path[cite: 1].
-
-The total capacity of the "pipe" is the **Bandwidth-Delay Product (BDP)**[cite: 1]:
+Their product is the **bandwidth-delay product**, the amount of data the path holds with no queue:
 
 $$\text{BDP} = \text{BtlBw} \times \text{RTprop}$$
 
 ```text
-    App-Limited          Bandwidth-Limited           Buffer-Limited
+    App-limited          Bandwidth-limited           Buffer-limited
 |<----------------->|<------------------------>|<---------------------->|
-                      ▲
-               Optimal Operating Point (Inflight = BDP)
-               * Max Delivery Rate (100% link utilization)
-               * Min RTT (Zero standing queues)
+                    ▲
+             Optimal operating point (inflight = BDP)
+             * maximum delivery rate (link fully used)
+             * minimum RTT (no standing queue)
+```
+
+Loss-based TCP operates at the right-hand edge, where the buffer is full and a packet is lost. BBR tries to operate at the left edge of the bandwidth-limited region, with inflight ≈ BDP.
+
+## 3. How BBR estimates the two numbers
+
+- RTprop and BtlBw can't be measured at the same moment. Measuring BtlBw needs enough inflight to fill the pipe, which creates a queue. Measuring RTprop needs the queue to be empty.
+- BBR therefore tracks **RTprop as a windowed minimum of RTT** and **BtlBw as a windowed maximum of delivery rate**.
+- **ProbeBW:** most of the time BBR paces at BtlBw, cycling the pacing gain through 1.25 → 0.75 → 1 → … One phase probes for more bandwidth, the next drains any queue the probe created (paper, Figure 4).
+- **ProbeRTT:** if RTprop hasn't been refreshed for many seconds (10 s in the Linux implementation), BBR cuts inflight to four packets for at least one round trip, so the queue drains and a fresh minimum RTT can be measured.

@@ -1,6 +1,10 @@
 """
-Main Experiment Runner: BBR vs Loss-Based Congestion Control
-Replicates Key Findings from Cardwell et al. (Google Research / ACM Queue)
+Redraws three figures from Cardwell et al., "BBR: Congestion-Based Congestion
+Control" (CACM 2017), using simple analytical models.
+
+The loss-based curves are computed (Mathis et al. model, full-buffer queueing).
+The BBR curves are hand-shaped to follow the results reported in the paper;
+this script does not implement or simulate BBR.
 """
 
 import numpy as np
@@ -14,14 +18,15 @@ def simulate_loss_experiment():
     
     max_goodput = link_bw_mbps * (1.0 - loss_rates)
     
-    # Mathis et al. model for loss-based TCP
-    c_const = 1.0
+    # Mathis et al. model for loss-based TCP: rate = (MSS / RTT) * C / sqrt(p)
+    c_const = np.sqrt(1.5)
     rtt_sec = rtt_ms / 1000.0
     mathis_bps = (mss_bytes * 8.0 / rtt_sec) * (c_const / np.sqrt(np.maximum(loss_rates, 1e-7)))
     mathis_mbps = mathis_bps / 1e6
     loss_based_goodput = np.minimum(link_bw_mbps, mathis_mbps) * (1.0 - loss_rates)
     
-    # BBR loss-resilience model
+    # BBR: hand-shaped to the paper's reported result (at the limit up to 5% loss,
+    # close to it up to 15%); not derived from BBR's algorithm
     bbr_goodput = np.zeros_like(loss_rates)
     for i, p in enumerate(loss_rates):
         if p < 0.05:
@@ -42,7 +47,7 @@ def simulate_bufferbloat_experiment():
     
     # Loss-based queue fills buffer to capacity
     loss_based_latency_sec = min_rtt_sec + (buffer_sizes_kb * 8.0) / link_rate_kbps
-    # BBR stabilizes inflight at ~1 BDP
+    # BBR: drawn flat near the base RTT (the paper reports it keeps inflight ~1 BDP)
     bbr_latency_sec = np.full_like(buffer_sizes_kb, min_rtt_sec + 0.005)
     
     return buffer_sizes_kb, loss_based_latency_sec, bbr_latency_sec
@@ -56,7 +61,7 @@ def simulate_pacing_cycle():
     rtt_curve = np.full(time_steps, rtt_base)
     inflight_curve = np.full(time_steps, inflight_base)
     
-    # Pacing gain cycling at intervals (1.25x probe phase)
+    # Illustrative sketch of ProbeBW gain cycling (1.25x probe phase); not measured
     probe1 = (time >= 0.2) & (time <= 0.4)
     inflight_curve[probe1] = inflight_base * (1.0 + 0.25 * np.sin(np.pi * (time[probe1] - 0.2) / 0.2))
     rtt_curve[probe1] = rtt_base + (inflight_curve[probe1] - inflight_base) * 0.5
@@ -75,10 +80,10 @@ def run_experiments():
     ax1 = fig.add_subplot(2, 2, 1)
     loss_rates, max_gp, loss_gp, bbr_gp = simulate_loss_experiment()
     ax1.plot(loss_rates * 100, max_gp, 'k--', label='Max Theoretical', alpha=0.6)
-    ax1.plot(loss_rates * 100, bbr_gp, color='#2ca02c', linewidth=2.5, label='BBR')
-    ax1.plot(loss_rates * 100, loss_gp, color='#d62728', linewidth=2, label='CUBIC / Loss-based')
+    ax1.plot(loss_rates * 100, bbr_gp, color='#2ca02c', linewidth=2.5, label='BBR (shaped to paper)')
+    ax1.plot(loss_rates * 100, loss_gp, color='#d62728', linewidth=2, label='Loss-based (Mathis model)')
     ax1.set_xscale('log')
-    ax1.set_title('Figure 10: Goodput vs. Packet Loss Rate', fontweight='bold')
+    ax1.set_title('After paper Fig. 10: goodput vs. random loss (model)', fontweight='bold')
     ax1.set_xlabel('Random Loss Rate (%) - Log Scale')
     ax1.set_ylabel('Goodput (Mbps)')
     ax1.set_ylim(-2, 105)
@@ -87,11 +92,11 @@ def run_experiments():
     # 2. Bufferbloat Comparison
     ax2 = fig.add_subplot(2, 2, 2)
     buf_kb, loss_lat, bbr_lat = simulate_bufferbloat_experiment()
-    ax2.plot(buf_kb, loss_lat, color='#d62728', linewidth=2.5, label='Loss-based (CUBIC)')
-    ax2.plot(buf_kb, bbr_lat, color='#2ca02c', linewidth=2.5, label='BBR')
-    ax2.axhline(y=75, color='gray', linestyle=':', label='Win/Mac SYN Timeout (~75s)')
-    ax2.axhline(y=180, color='black', linestyle=':', label='Linux/Android SYN Timeout (~180s)')
-    ax2.set_title('Figure 12: Latency vs. Router Buffer Size', fontweight='bold')
+    ax2.plot(buf_kb, loss_lat, color='#d62728', linewidth=2.5, label='Loss-based (full buffer)')
+    ax2.plot(buf_kb, bbr_lat, color='#2ca02c', linewidth=2.5, label='BBR (shaped to paper)')
+    ax2.axhline(y=75, color='gray', linestyle=':', label='SYN timeout, Windows/macOS (approx.)')
+    ax2.axhline(y=180, color='black', linestyle=':', label='SYN timeout, Linux/Android (approx.)')
+    ax2.set_title('After paper Fig. 12: latency vs. buffer size (model)', fontweight='bold')
     ax2.set_xlabel('Bottleneck Buffer Size (KB)')
     ax2.set_ylabel('End-to-End Latency (Seconds)')
     ax2.legend()
@@ -102,7 +107,7 @@ def run_experiments():
     ax3_twin = ax3.twinx()
     p1 = ax3.plot(t_dyn, rtt_dyn, color='#1f77b4', linewidth=2, label='RTT (ms)')
     p2 = ax3_twin.plot(t_dyn, inf_dyn, color='#bcbd22', linewidth=2, linestyle='--', label='Inflight (kB)')
-    ax3.set_title('Figure 4: ProbeBW Gain Cycling Dynamics', fontweight='bold')
+    ax3.set_title('After paper Fig. 4: ProbeBW gain cycling (sketch)', fontweight='bold')
     ax3.set_xlabel('Time (seconds)')
     ax3.set_ylabel('RTT (ms)', color='#1f77b4')
     ax3_twin.set_ylabel('Inflight (kB)', color='#bcbd22')
@@ -114,7 +119,7 @@ def run_experiments():
     import os
     os.makedirs('results', exist_ok=True)
     plt.savefig('results/bbr_replication_results.png', dpi=300)
-    print("Execution complete. Benchmark charts saved to 'results/bbr_replication_results.png'.")
+    print("Saved figure to 'results/bbr_replication_results.png'.")
 
 if __name__ == '__main__':
     run_experiments()
